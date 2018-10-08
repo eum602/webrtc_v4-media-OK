@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<head>   
+    <title>eum602-webRTC</title>
+    <link rel="stylesheet" type="text/css" href="styles.css">
+            <html lang="eng">
+    <script src="/socket.io/socket.io.js" ></script>
+</head>
+<body>
+
+    <video id="myVideoTag" autoplay></video>
+    <video id="theirVideoTag" autoplay></video>
+    <div>
+        <input type="file" id="sendFile"/><br/>
+        <progress id="fileProgress" value="1" max="100"></progress>
+        <a id="receivedFileLink"></a>
+        <hr/>
+    </div>
+    <div>
+        <button  id="startVideo" type="submit"/>
+    </div>
+    <div>
+        <label>Your name</label><input  id="myName" type="text"/>
+        <label>Message</label><input id="myMessage" type="text" />
+        <input  id="sendMessage" type="submit"/>
+        <div id="chatArea">Message Output:<br></div>
+        <div id="signalingArea">Signaling Messages:<br/></div>
+    </div>
+    <script>
+        var startVideo = document.querySelector("#startVideo")
+        var myVideoArea = document.querySelector("#myVideoTag");
+        var theirVideoArea = document.querySelector("#theirVideoTag");
+        var myName = document.querySelector('#myName')
+        var myMessage = document.querySelector('#myMessage')
+        var sendMessage = document.querySelector('#sendMessage')
+        var chatArea = document.querySelector('#chatArea')
+        var signalingArea = document.querySelector("#signalingArea")
+        var sendFile = document.querySelector("input#sendFile")
+        var fileProgress = document.querySelector("progress#fileProgress")
+        var downloadLink = document.querySelector('a#receivedFileLink')
+        var ROOM = "chat";//ROOM = prompt('type a room name') -->si pongo esto
+        var SIGNAL_ROOM = "signal_room"
+        var FILES_ROOM = "files"
+        var configuration = {//creando los parametros de configuracion para los ICE servers
+            'iceServers':[{
+                'url':'stun:stun.l.google.com:19302' 
+            },{'url': 'stun:stun.services.mozilla.com'}]
+        };
+        var created = false
+/////////////////////////////////////////////////////////////////////////////////////////////        
+        var constraints =  {
+            audio:true,           
+            video : {
+                mandatory:{
+                    minWidth:320,
+                    maxWidth:320,
+                    minHeight:180,
+                    maxHeight:180
+                }
+            }
+        }
+        
+        io = io.connect();
+        console.log('io',io)
+        io.emit('ready',{"chat_room":ROOM,"signal_room":SIGNAL_ROOM,"files_room":FILES_ROOM});
+        io.emit('signal',{"type":"user_here","message":"Are you ready for a call?","room":SIGNAL_ROOM})
+        ///////////////////valores de inicializacion///////////////////////////////
+        var rtcPeerConn = new webkitRTCPeerConnection(configuration)
+        console.log(rtcPeerConn)
+        // send any ice candidates to the other peer
+        //pc.onicecandidate = ({candidate}) => signaling.send({candidate});
+        rtcPeerConn.onicecandidate = ({candidate}) => {
+            if(candidate){                   
+                console.log("candidate created ready to be sent: ",candidate);
+                io.emit('signal',{
+                    "type":"ice candidate",//"type":"ice_candidate"==========================
+                    "message":JSON.stringify({'candidate':candidate}),
+                    "room":SIGNAL_ROOM})                            
+                displaySignalMessage("6. completed my ice candidate...");                
+            }
+        }
+        /*
+        // let the "negotiationneeded" event trigger offer generation
+        rtcPeerConn.onnegotiationneeded = async()=>{
+            displaySignalMessage("7. on negociation needed");
+            try{            
+                await rtcPeerConn.setLocalDescription(await rtcPeerConn.createOffer())
+                sendLocalDesc(rtcPeerConn.localDescription) //sending my local description to the other peer
+
+            }catch(e){
+                logError1(e,"on negotiation needed")
+            }
+        }
+        */
+        // once remote track media arrives, show it in remote video element
+        rtcPeerConn.ontrack = (event) => {
+        // don't set srcObject again if it is already set.
+        if (theirVideoArea.srcObject) return;
+        theirVideoArea.srcObject = event.streams[0];
+        };
+        // call start() to initiate
+        async function start() {
+            try {
+                created = true          
+                console.log('entering start function..')
+                //await rtcPeerConn.setLocalDescription(await rtcPeerConn.createOffer())
+                //sendLocalDesc(rtcPeerConn.localDescription) //sending my local description to the other peer
+                // get local stream, show it in self-view and add it to be sent
+                const stream =
+                await navigator.mediaDevices.getUserMedia(constraints);
+                stream.getTracks().forEach((track) =>
+                rtcPeerConn.addTrack(track, stream));
+                myVideoArea.srcObject = stream;                
+                await rtcPeerConn.setLocalDescription(await rtcPeerConn.createOffer())
+                sendLocalDesc(rtcPeerConn.localDescription) //sending my local description to the other peer
+
+            } catch (err) {
+                console.log("Error on start function",err);
+            }
+        }
+//////////////////////////////signaling //////////////////////////////////////////////////////////////   
+        io.on('signaling_message', async (data)=>{
+            console.log("data",data)
+            displaySignalMessage("data type: " + data.type)
+            if (!created) start();
+            try {
+                if (data.type=="SDP") {
+                    var a = JSON.parse(data.message)
+                    var desc = a.sdp
+                    console.log("desc: ",desc)                    
+                    var c = desc.type
+                    //console.log('SDP con parse:',c)
+                    displaySignalMessage('working on sdp type ' + c)
+                    // if we get an offer, we need to reply with an answer
+                    if (c === 'offer') {
+                        displaySignalMessage("Entering to define an answer because of offer input..")
+                        await rtcPeerConn.setRemoteDescription(desc).catch(e=>{
+                        //await rtcPeerConn.setRemoteDescription(new RTCSessionDescription(desc)).catch(e=>{
+                            displaySignalMessage('error setting remote description ' + e.name)
+                            console.log("Error setting remote description: ", e)
+                        });
+                        const stream =
+                        await navigator.mediaDevices.getUserMedia(constraints);
+                        stream.getTracks().forEach((track) =>
+                        rtcPeerConn.addTrack(track, stream));
+                        await rtcPeerConn.setLocalDescription(await rtcPeerConn.createAnswer()).catch(e=>
+                        {displaySignalMessage("Error setting local description when receiving an offer: " + e.name)});
+                        //signaling.send({desc: pc.localDescription});
+                        console.log('local description-answer: ',rtcPeerConn.localDescription)
+                        sendLocalDesc(rtcPeerConn.localDescription)
+                    } else if (c === 'answer') {
+                        displaySignalMessage("Entering to store the answer remote description..")
+                        await rtcPeerConn.setRemoteDescription(desc).catch(e=>{
+                        //await rtcPeerConn.setRemoteDescription(new RTCSessionDescription(desc)).catch(e=>{
+                          displaySignalMessage('error setting remote descrition: '+ e.name)
+                          console.log('error setting remote descrition: ', e)  
+                        });
+                        console.log("Remote answer stored  :",rtcPeerConn.remoteDescription)
+                    } else {
+                        console.log('Unsupported SDP type.');
+                    }
+                } else if (data.type === "ice candidate") {
+                    displaySignalMessage("Adding Ice candidate..")
+                    var m = JSON.parse(data.message)
+                    ice = m.candidate
+                    console.log('ice candidate: ',ice)
+                    await rtcPeerConn.addIceCandidate(ice).catch(e => {
+                    //await rtcPeerConn.addIceCandidate(new RTCIceCandidate(message.candidate)).catch(e=>{
+                    displaySignalMessage("3. Failure during addIceCandidate(): " + e.name)
+                    console.log('error adding iceCandidate: ', e)
+                    })
+                }
+            } catch (err) {
+                displaySignalMessage("error on signaling message: " + err.name);
+                console.log("error on signaling message: " , err)
+            }                        
+        })
+////////////////////////////function sendLocalDesc/////////////////////////////////////////////////////        
+        //sendLocalDesc ==> send local DESCRIPTION
+        function sendLocalDesc(desc){
+            console.log("sending local description",desc);//------------>aqui hay un error entra varias veces, cuando solo ha entrado un usuario mas.
+            try{
+                displaySignalMessage("16. Sending Local description");
+                var sdp = {//creando mi session description protocol (SDP) 
+                    //del nodo en el que me encuentro: Esta informacion es acerca
+                    //del video codec, resolution,etc
+                    type:"SDP",
+                    message:JSON.stringify({'sdp':desc}),
+                    room:SIGNAL_ROOM
+                }
+                console.log("sdp sent to other nodes in sendLocalDescription: ",sdp)
+                io.emit('signal',sdp);
+                          
+            }catch{
+                logError1(e,"sending local description");
+            }
+        }
+/////////////////////////////////logError1/////////////////////////////////////////////////////
+        function logError1(error,where){
+            displaySignalMessage("problems in " + where +" "+ error.name + ': ' + error.message );
+        }
+        function logError(error){
+            displaySignalMessage( error.name + ': ' + error.message );
+        }
+        function displayMessage(message){
+            chatArea.innerHTML = chatArea.innerHTML + "<br/>" + message; //solo se adjunta el mensaje
+        }       
+        function displaySignalMessage(message){
+            signalingArea.innerHTML = signalingArea.innerHTML + "<br/>" + message; //solo se adjunta el mensaje
+        }
+    </script>
+</body>
+</html>
